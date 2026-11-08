@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 
 from .config import Channel, Config
-from .ytdlp import YtDlp, YtDlpError, audio_duration
+from .chapters import merge, shift_timestamps
+from .ytdlp import YtDlp, YtDlpError, audio_duration, file_chapters
 
 log = logging.getLogger(__name__)
 
@@ -191,15 +192,18 @@ def sync_channel(config: Config, channel: Channel, ytdlp: YtDlp, data_dir: Path)
         meta = state["videos"][vid]
         log.info("%s: downloading %s %r", channel.slug, vid, meta["title"])
         try:
-            path = ytdlp.download(vid, folder, config.sponsorblock)
+            path, segments = ytdlp.download(vid, folder, config.sponsorblock)
         except YtDlpError as e:
             log.warning("%s: could not download %s: %s", channel.slug, vid, e)
             state["videos"][vid] = {"error": f"download: {e}", "checked": now}
             save_state(data_dir, channel.slug, state)
             continue
         episodes[vid] = {
-            **{k: meta[k] for k in ("title", "description", "timestamp", "thumbnail")},
+            **{k: meta[k] for k in ("title", "timestamp", "thumbnail")},
+            # The chapter list in the description, moved to match the cut audio
+            "description": shift_timestamps(meta["description"], merge(segments)),
             "duration": audio_duration(path) or meta.get("duration"),
+            "chapters": file_chapters(path),
             "file": path.name,
             "size": path.stat().st_size,
         }

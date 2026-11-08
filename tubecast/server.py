@@ -1,14 +1,18 @@
 """HTTP server for the feeds and audio files, with the Range requests podcast apps seek with."""
 
 import html
+import json
 import logging
 import re
+import time
+from datetime import datetime, timezone
 from email.utils import formatdate
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import feed
+from . import __version__, feed
+from .chapters import to_json
 from .config import Config
 from .sync import audio_dir, load_state
 
@@ -17,6 +21,7 @@ log = logging.getLogger(__name__)
 CHUNK = 256 * 1024
 FEED_PATH = re.compile(r"/feeds/([a-z0-9][a-z0-9_-]*)\.xml")
 AUDIO_PATH = re.compile(r"/audio/([a-z0-9][a-z0-9_-]*)/([\w-]+\.m4a)")
+CHAPTERS_PATH = re.compile(r"/chapters/([a-z0-9][a-z0-9_-]*)/([\w-]+)\.json")
 
 
 class App:
@@ -26,6 +31,33 @@ class App:
         self.data_dir = data_dir
         self.config: Config | None = None
         self.config_error: str | None = None
+        self.ytdlp_version: str | None = None
+        self.last_check: float | None = None  # when the last check of all channels finished
+
+    def stats(self) -> dict:
+        """Counts for dashboards such as Homepage, and the versions for update checks."""
+        channels = self.config.channels if self.config else ()
+        episodes = sum(len(load_state(self.data_dir, c.slug)["episodes"]) for c in channels)
+        last_check = last_check_ago = None
+        if self.last_check:
+            last_check = datetime.fromtimestamp(self.last_check, timezone.utc).isoformat()
+            last_check_ago = ago(time.time() - self.last_check)
+        # What the audio files take on disk, leftovers of removed channels included
+        disk_bytes = sum(p.stat().st_size for p in (self.data_dir / "audio").rglob("*") if p.is_file())
+        return {"version": __version__, "yt_dlp": self.ytdlp_version, "channels": len(channels),
+                "episodes": episodes, "disk_bytes": disk_bytes, "last_check": last_check,
+                "last_check_ago": last_check_ago, "config_error": self.config_error}
+
+
+def ago(seconds: float) -> str:
+    """A short "how long ago" for dashboards: "now", "2 min ago", "3h ago", "2d ago"."""
+    if seconds < 60:
+        return "now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
 
 
 def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
@@ -62,6 +94,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/healthz":
             return self._send(HTTPStatus.OK, b"ok\n", "text/plain", head)
+        if path == "/stats":
+            body = json.dumps(self.app.stats()).encode()
+            return self._send(HTTPStatus.OK, body, "application/json", head)
         config = self.app.config
         if path == "/":
             return self._send(HTTPStatus.OK, self._index(config), "text/html; charset=utf-8", head)
@@ -72,6 +107,13 @@ class Handler(BaseHTTPRequestHandler):
                 state = load_state(self.app.data_dir, channel.slug)
                 body = feed.build(channel, state, config.base_url)
                 return self._send(HTTPStatus.OK, body, "application/rss+xml; charset=utf-8", head)
+        if match := CHAPTERS_PATH.fullmatch(path):
+            slug, vid = match.groups()
+            if slug in channels:
+                episode = load_state(self.app.data_dir, slug)["episodes"].get(vid)
+                if episode and episode.get("chapters"):
+                    body = json.dumps(to_json(episode["chapters"]), ensure_ascii=False).encode()
+                    return self._send(HTTPStatus.OK, body, "application/json+chapters", head)
         if match := AUDIO_PATH.fullmatch(path):
             slug, name = match.groups()
             if slug in channels:
@@ -142,7 +184,10 @@ class Handler(BaseHTTPRequestHandler):
         return page.encode()
 
     def log_message(self, format, *args):
-        log.debug("%s %s", self.address_string(), format % args)
+        # The client and range help see what a podcast app asks for
+        log.debug("%s %s range=%s ua=%r", self.address_string(), format % args,
+                  self.headers.get("Range") if self.headers else None,
+                  self.headers.get("User-Agent") if self.headers else None)
 
 
 INDEX = """<!doctype html>

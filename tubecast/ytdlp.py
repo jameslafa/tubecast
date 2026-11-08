@@ -67,8 +67,10 @@ class YtDlp:
         out = self._run(["-J", "--no-playlist", watch_url(video_id)], LIST_TIMEOUT)
         return json.loads(out)
 
-    def download(self, video_id: str, dest_dir: Path, sponsorblock: tuple[str, ...]) -> Path:
-        """Downloads the audio as m4a to dest_dir/<id>.m4a, sponsor segments cut out."""
+    def download(self, video_id: str, dest_dir: Path,
+                 sponsorblock: tuple[str, ...]) -> tuple[Path, list[tuple[float, float]]]:
+        """Downloads the audio as m4a to dest_dir/<id>.m4a, sponsor segments cut out. Returns the
+        file and the segments cut, as (start, end) seconds of the original video."""
         dest_dir.mkdir(parents=True, exist_ok=True)
         args = [
             "--no-playlist",
@@ -77,19 +79,35 @@ class YtDlp:
             "-x", "--audio-format", "m4a",
             "--embed-metadata", "--embed-thumbnail", "--convert-thumbnails", "jpg",
             "-o", str(dest_dir / "%(id)s.%(ext)s"),
-            "--print", "after_move:filepath",
+            "--print", "after_move:%(.{filepath,sponsorblock_chapters})j",
         ]
         if sponsorblock:
             args += ["--sponsorblock-remove", ",".join(sponsorblock)]
         out = self._run(args + [watch_url(video_id)], DOWNLOAD_TIMEOUT)
-        lines = out.strip().splitlines()
-        if not lines:
-            raise YtDlpError("yt-dlp did not report the downloaded file")
-        return Path(lines[-1])
+        try:
+            result = json.loads(out.strip().splitlines()[-1])
+            path = Path(result["filepath"])
+        except (IndexError, ValueError, KeyError, TypeError):
+            raise YtDlpError("yt-dlp did not report the downloaded file") from None
+        segments = result.get("sponsorblock_chapters") or []
+        return path, [(s["start_time"], s["end_time"]) for s in segments]
 
 
 def watch_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def file_chapters(path: Path) -> list[dict]:
+    """The chapters embedded in an audio file, as [{"start": seconds, "title": ...}]."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_chapters", "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=60)
+        chapters = json.loads(result.stdout).get("chapters") or []
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    return [{"start": float(c["start_time"]), "title": (c.get("tags") or {}).get("title") or ""}
+            for c in chapters]
 
 
 def audio_duration(path: Path) -> int | None:

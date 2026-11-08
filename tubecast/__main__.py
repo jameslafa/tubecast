@@ -52,6 +52,12 @@ def main() -> None:
             except Exception as e:  # keep the yt-dlp we have
                 log.warning("could not update yt-dlp: %s", e)
             last_update = time.time()
+            app.ytdlp_version = None  # read it again below
+        if not app.ytdlp_version:
+            try:
+                app.ytdlp_version = ytdlp.version()
+            except Exception as e:
+                log.warning("could not get the yt-dlp version: %s", e)
 
         mtime = config_mtime(config_path)
         try:
@@ -61,6 +67,7 @@ def main() -> None:
             app.config_error = str(e)  # keep serving the last good config, if any
         if app.config and not app.config_error:
             sync_all(app.config, ytdlp, data_dir)
+            app.last_check = time.time()
             wait = app.config.check_every
         else:
             wait = UPDATE_EVERY

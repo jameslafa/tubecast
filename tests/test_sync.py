@@ -96,11 +96,12 @@ class FakeYtDlp:
         dest_dir.mkdir(parents=True, exist_ok=True)
         path = dest_dir / f"{vid}.m4a"
         path.write_bytes(b"audio" * 10)
-        return path
+        return path, [(60, 120)]  # a one-minute sponsor cut
 
 
 def info(age_hours, **extra):
-    return {"title": "t", "timestamp": NOW - age_hours * HOUR, "duration": 1200, "live_status": "not_live",
+    return {"title": "t", "description": "00:00 Intro\n03:00 Topic", "timestamp": NOW - age_hours * HOUR,
+            "duration": 1200, "live_status": "not_live",
             "thumbnails": [{"url": "https://i/hq.jpg", "width": 480}, {"url": "https://i/max.webp", "width": 1280},
                            {"url": "https://i/max.jpg?x=1", "width": 1280}], **extra}
 
@@ -109,6 +110,7 @@ def info(age_hours, **extra):
 def now(monkeypatch):
     monkeypatch.setattr("tubecast.sync.time.time", lambda: NOW)
     monkeypatch.setattr("tubecast.sync.audio_duration", lambda path: 1100)
+    monkeypatch.setattr("tubecast.sync.file_chapters", lambda path: [{"start": 0.0, "title": "Intro"}])
 
 
 def test_sync_channel_end_to_end(tmp_path, now, monkeypatch):
@@ -126,6 +128,8 @@ def test_sync_channel_end_to_end(tmp_path, now, monkeypatch):
     assert state["episodes"]["v2"]["duration"] == 1100
     assert state["episodes"]["v2"]["size"] == 50
     assert state["episodes"]["v2"]["thumbnail"] == "https://i/max.jpg?x=1"
+    assert state["episodes"]["v2"]["description"] == "00:00 Intro\n02:00 Topic"
+    assert state["episodes"]["v2"]["chapters"] == [{"start": 0.0, "title": "Intro"}]
     assert state["channel"]["title"] == "Test Channel"
 
     # Later: v1 is old enough now and pushes out s1, the oldest episode

@@ -8,6 +8,8 @@ podcast feed per channel, for any podcast app.
 - Audio only, in YouTube's own AAC audio (m4a): no re-encoding, about 60 MB per hour
 - Sponsor reads, self-promotion and "like and subscribe" cut out with
   [SponsorBlock](https://sponsor.ajay.app). YouTube's own ads are never in the download.
+- Chapters from YouTube, in the file and as a `<podcast:chapters>` file in the feed, and the
+  timestamps in the episode notes moved to match the audio after the sponsor cuts
 - Keeps the newest 5 episodes per channel (configurable) and deletes older ones
 - One config file; adding a channel is one line. No YouTube API key.
 - Keeps yt-dlp up to date on its own, since YouTube changes break old versions
@@ -94,6 +96,13 @@ Feeds are private: they ask podcast directories not to list them. The podcast ap
 to reach `base_url`. Apps that fetch feeds through their own servers need it reachable from the
 internet; apps that fetch on the phone only need the phone to reach it.
 
+## Status
+
+`/stats` returns JSON for dashboards and update checks: `version`, `yt_dlp`, `channels`,
+`episodes`, `disk_bytes` (size of all audio files), `last_check` (ISO time of the last finished check), `last_check_ago` (the same as short text,
+like `2 min ago` or `3h ago`) and `config_error`. `/healthz`
+answers `ok`.
+
 ## Backups
 
 Back up `config.yaml` and the `state` folder. The audio files are not worth backing up: tubecast
@@ -104,7 +113,7 @@ downloads missing episodes again.
 | Variable | Default | |
 |---|---|---|
 | `TUBECAST_UPDATE_YTDLP` | `1` | Update yt-dlp at start and every 24 hours. `0` keeps the version in the image. |
-| `TUBECAST_LOG_LEVEL` | `INFO` | `DEBUG` also logs each HTTP request. |
+| `TUBECAST_LOG_LEVEL` | `INFO` | `DEBUG` also logs each HTTP request, with its range and client. With compose, set it in `.env`. |
 
 ## Development
 

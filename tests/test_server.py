@@ -6,7 +6,7 @@ import urllib.request
 import pytest
 
 from tubecast.config import parse
-from tubecast.server import App, make_server, parse_range
+from tubecast.server import App, ago, make_server, parse_range
 
 
 @pytest.mark.parametrize("header, size, expected", [
@@ -41,7 +41,8 @@ def base(tmp_path):
     (tmp_path / "state" / "test.json").write_text(json.dumps({
         "channel": {"title": "Test"},
         "episodes": {"abc_-1": {"title": "Ep", "description": "", "timestamp": 1_800_000_000,
-                                "duration": 60, "thumbnail": None, "file": "abc_-1.m4a", "size": 1024}}}))
+                                "duration": 60, "thumbnail": None, "file": "abc_-1.m4a", "size": 1024,
+                                "chapters": [{"start": 0.0, "title": "Intro"}, {"start": 30.5, "title": "Main"}]}}}))
     app = App(tmp_path)
     app.config = parse({"base_url": "https://tube.example", "channels": ["@Test"]})
     server = make_server(app, "127.0.0.1", 0)
@@ -93,6 +94,14 @@ def test_feed(base):
     assert b"https://tube.example/audio/test/abc_-1.m4a" in body
 
 
+def test_chapters(base):
+    status, headers, body = get(f"{base}/chapters/test/abc_-1.json")
+    assert status == 200
+    assert headers["Content-Type"] == "application/json+chapters"
+    assert json.loads(body)["chapters"] == [{"startTime": 0.0, "title": "Intro"}, {"startTime": 30.5, "title": "Main"}]
+    assert get(f"{base}/chapters/test/missing.json")[0] == 404
+
+
 def test_index(base):
     status, _, body = get(f"{base}/")
     assert status == 200
@@ -105,3 +114,24 @@ def test_index(base):
 ])
 def test_not_found(base, path):
     assert get(f"{base}{path}")[0] == 404
+
+
+def test_stats(base):
+    status, headers, body = get(f"{base}/stats")
+    assert status == 200
+    assert headers["Content-Type"] == "application/json"
+    stats = json.loads(body)
+    assert stats["channels"] == 1
+    assert stats["episodes"] == 1
+    assert stats["disk_bytes"] == 1024
+    assert stats["last_check"] is None
+    assert stats["last_check_ago"] is None
+    assert stats["version"]
+
+
+@pytest.mark.parametrize("seconds, text", [
+    (5, "now"), (60, "1 min ago"), (150, "2 min ago"), (3599, "59 min ago"), (3600, "1h ago"),
+    (3 * 3600 + 1800, "3h ago"), (86400, "1d ago"), (5 * 86400, "5d ago"),
+])
+def test_ago(seconds, text):
+    assert ago(seconds) == text

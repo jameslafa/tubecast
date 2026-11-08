@@ -11,7 +11,8 @@ from .ytdlp import watch_url
 ITUNES = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 CONTENT = "http://purl.org/rss/1.0/modules/content/"
 ATOM = "http://www.w3.org/2005/Atom"
-for prefix, uri in (("itunes", ITUNES), ("content", CONTENT), ("atom", ATOM)):
+PODCAST = "https://podcastindex.org/namespace/1.0"
+for prefix, uri in (("itunes", ITUNES), ("content", CONTENT), ("atom", ATOM), ("podcast", PODCAST)):
     ET.register_namespace(prefix, uri)
 
 
@@ -21,6 +22,10 @@ def feed_url(base_url: str, slug: str) -> str:
 
 def audio_url(base_url: str, slug: str, file: str) -> str:
     return f"{base_url}/audio/{slug}/{file}"
+
+
+def chapters_url(base_url: str, slug: str, video_id: str) -> str:
+    return f"{base_url}/chapters/{slug}/{video_id}.json"
 
 
 def _sub(parent: ET.Element, tag: str, text: str | None = None, **attrs) -> ET.Element:
@@ -80,6 +85,9 @@ def build(channel: Channel, state: dict, base_url: str) -> bytes:
             _sub(item, f"{{{ITUNES}}}duration", str(int(episode["duration"])))
         if episode.get("thumbnail"):
             _sub(item, f"{{{ITUNES}}}image", href=episode["thumbnail"])
+        if episode.get("chapters"):
+            _sub(item, f"{{{PODCAST}}}chapters", url=chapters_url(base_url, channel.slug, vid),
+                 type="application/json+chapters")
 
     ET.indent(rss)
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
