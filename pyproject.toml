@@ -1,0 +1,14 @@
+[project]
+name = "tubecast"
+version = "0.1.0"
+description = "Turns YouTube channels into podcast feeds"
+license = "MIT"
+requires-python = ">=3.13"
+# yt-dlp is not listed: it's installed separately and updated while tubecast runs
+dependencies = ["pyyaml>=6"]
+
+[project.optional-dependencies]
+test = ["pytest>=9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

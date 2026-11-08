@@ -1,0 +1,14 @@
+services:
+  tubecast:
+    build: .
+    container_name: tubecast
+    restart: unless-stopped
+    ports:
+      # Host address and port to publish on; set TUBECAST_PUBLISH in .env to change it
+      - "${TUBECAST_PUBLISH:-127.0.0.1:8091}:8091"
+    volumes:
+      # config.yaml, the state of each channel and the audio files
+      - data:/data
+
+volumes:
+  data:

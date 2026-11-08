@@ -1,0 +1,27 @@
+# tubecast config: copy this file to config.yaml in the data folder (/data in the container).
+# tubecast reads it again when it changes, so a new channel shows up without a restart.
+
+# Where your podcast app reaches tubecast. Feed and audio URLs start with it.
+base_url: http://localhost:8091
+
+# How often to look for new videos, and how old a video must be before it's downloaded.
+# The delay gives SponsorBlock viewers time to mark the sponsor segments.
+check_every: 4h
+download_delay: 6h
+
+# SponsorBlock categories to cut out. [] keeps everything.
+# All categories: https://wiki.sponsor.ajay.app/w/Segment_Categories
+sponsorblock: [sponsor, selfpromo, interaction]
+
+# Defaults for every channel; each one can also be set per channel.
+keep: 5                 # newest episodes to keep
+# min_duration: 10m     # skip videos shorter than this
+# include_shorts: true  # also YouTube Shorts (only regular videos by default)
+# include_live: true    # also finished live streams
+
+channels:
+  - https://www.youtube.com/@GamersNexus
+  # - url: "@SomeChannel"
+  #   keep: 3
+  #   include_live: true
+  #   slug: some-channel  # name in the feed URL, from the handle by default
