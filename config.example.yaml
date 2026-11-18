@@ -19,6 +19,12 @@ keep: 5                 # newest episodes to keep
 # include_shorts: true  # also YouTube Shorts (only regular videos by default)
 # include_live: true    # also finished live streams
 
+# "Listen later": one more feed, for single videos sent to POST /later (see the README).
+# Episodes are deleted 14 days after they were sent, or sooner when the feed passes max_size.
+# later:
+#   keep_days: 14
+#   max_size: 5GB
+
 channels:
   - https://www.youtube.com/@GamersNexus
   # - url: "@SomeChannel"

@@ -10,10 +10,11 @@ from email.utils import formatdate
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
-from . import __version__, feed
+from . import __version__, feed, later
 from .chapters import to_json
-from .config import Config
+from .config import LATER_SLUG, Channel, Config
 from .sync import audio_dir, load_state
 
 log = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ CHUNK = 256 * 1024
 FEED_PATH = re.compile(r"/feeds/([a-z0-9][a-z0-9_-]*)\.xml")
 AUDIO_PATH = re.compile(r"/audio/([a-z0-9][a-z0-9_-]*)/([\w-]+\.m4a)")
 CHAPTERS_PATH = re.compile(r"/chapters/([a-z0-9][a-z0-9_-]*)/([\w-]+)\.json")
+MAX_BODY = 10_000  # bytes a POST /later may send
 
 
 class App:
@@ -33,6 +35,7 @@ class App:
         self.config_error: str | None = None
         self.ytdlp_version: str | None = None
         self.last_check: float | None = None  # when the last check of all channels finished
+        self.later: later.Later | None = None  # takes the URLs sent to POST /later
 
     def stats(self) -> dict:
         """Counts for dashboards such as Homepage, and the versions for update checks."""
@@ -44,9 +47,24 @@ class App:
             last_check_ago = ago(time.time() - self.last_check)
         # What the audio files take on disk, leftovers of removed channels included
         disk_bytes = sum(p.stat().st_size for p in (self.data_dir / "audio").rglob("*") if p.is_file())
+        later_episodes = None
+        if self.config and self.config.later:
+            later_episodes = len(later.load(self.data_dir)["episodes"])
         return {"version": __version__, "yt_dlp": self.ytdlp_version, "channels": len(channels),
-                "episodes": episodes, "disk_bytes": disk_bytes, "last_check": last_check,
-                "last_check_ago": last_check_ago, "config_error": self.config_error}
+                "episodes": episodes, "later_episodes": later_episodes, "disk_bytes": disk_bytes,
+                "last_check": last_check, "last_check_ago": last_check_ago,
+                "config_error": self.config_error}
+
+    def feeds(self) -> dict[str, Channel]:
+        """The feeds served, by slug: Listen later (when on) and the channels."""
+        config = self.config
+        if not config:
+            return {}
+        feeds = {LATER_SLUG: later.channel(config)} if config.later else {}
+        return feeds | {c.slug: c for c in config.channels}
+
+    def state(self, slug: str) -> dict:
+        return later.load(self.data_dir) if slug == LATER_SLUG else load_state(self.data_dir, slug)
 
 
 def ago(seconds: float) -> str:
@@ -100,17 +118,17 @@ class Handler(BaseHTTPRequestHandler):
         config = self.app.config
         if path == "/":
             return self._send(HTTPStatus.OK, self._index(config), "text/html; charset=utf-8", head)
-        channels = {c.slug: c for c in config.channels} if config else {}
+        channels = self.app.feeds()
         if match := FEED_PATH.fullmatch(path):
             channel = channels.get(match.group(1))
             if channel:
-                state = load_state(self.app.data_dir, channel.slug)
+                state = self.app.state(channel.slug)
                 body = feed.build(channel, state, config.base_url)
                 return self._send(HTTPStatus.OK, body, "application/rss+xml; charset=utf-8", head)
         if match := CHAPTERS_PATH.fullmatch(path):
             slug, vid = match.groups()
             if slug in channels:
-                episode = load_state(self.app.data_dir, slug)["episodes"].get(vid)
+                episode = self.app.state(slug)["episodes"].get(vid)
                 if episode and episode.get("chapters"):
                     body = json.dumps(to_json(episode["chapters"]), ensure_ascii=False).encode()
                     return self._send(HTTPStatus.OK, body, "application/json+chapters", head)
@@ -119,6 +137,32 @@ class Handler(BaseHTTPRequestHandler):
             if slug in channels:
                 return self._file(audio_dir(self.app.data_dir, slug) / name, "audio/mp4", head)
         self._send(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain", head)
+
+    def do_POST(self):
+        """POST /later with a video URL, as JSON ({"url": ...}), a form or plain text."""
+        path = self.path.split("?", 1)[0]
+        config = self.app.config
+        if path != "/later" or not (config and config.later and self.app.later):
+            return self._send(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain", False)
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY:
+            return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, b"too long\n", "text/plain", False)
+        text = self.rfile.read(length).decode("utf-8", "replace")
+        if "json" in (self.headers.get("Content-Type") or ""):
+            try:
+                text = str(json.loads(text).get("url") or "")
+            except (ValueError, AttributeError):
+                text = ""
+        elif "form-urlencoded" in (self.headers.get("Content-Type") or ""):
+            # A form's url field, or plain text sent as a form (curl -d does)
+            text = (parse_qs(text).get("url") or [text])[0]
+        url = later.find_url(text)
+        if not url:
+            body = json.dumps({"error": "expected a video URL"}).encode()
+            return self._send(HTTPStatus.BAD_REQUEST, body, "application/json", False)
+        self.app.later.add(url)
+        body = json.dumps({"queued": url}).encode()
+        self._send(HTTPStatus.ACCEPTED, body, "application/json", False)
 
     def _send(self, status: HTTPStatus, body: bytes, content_type: str, head: bool) -> None:
         self.send_response(status)
@@ -170,8 +214,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _index(self, config: Config | None) -> bytes:
         rows = []
-        for channel in config.channels if config else ():
-            state = load_state(self.app.data_dir, channel.slug)
+        for channel in self.app.feeds().values():
+            state = self.app.state(channel.slug)
             title = (state["channel"] or {}).get("title") or channel.slug
             url = feed.feed_url(config.base_url, channel.slug)
             rows.append(f"<li><b>{html.escape(title)}</b> ({len(state['episodes'])} episodes)<br>"

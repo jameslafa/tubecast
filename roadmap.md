@@ -45,7 +45,7 @@ sponsor reads. It's meant to run at home, on a small server reachable only by yo
 
 ## How it's built
 
-- `tubecast/config.py` reads the YAML; `ytdlp.py` runs and updates yt-dlp; `sync.py` lists
+- `tubecast/config.py` reads the YAML; `later.py` is the Listen later feed; `ytdlp.py` runs and updates yt-dlp; `sync.py` lists
   channels, picks what to download, downloads and deletes; `feed.py` writes the RSS;
   `chapters.py` handles chapters and timestamps; `server.py` serves feeds and audio;
   `__main__.py` runs the loop.
@@ -86,9 +86,59 @@ sponsor reads. It's meant to run at home, on a small server reachable only by yo
   ignores the file's own chapters, so for shows outside its catalog chapters seem to be processed
   only on Apple's servers. Podverse didn't request the JSON either. Downcast (paid, fetches on the
   phone, supports chapters) is untested.
+- **YouTube sometimes refuses the https audio streams** with a 403 (seen 2026-11-18 on a
+  video out for 15 hours, whose https streams also needed a PO token), while its HLS (m3u8)
+  streams of the same audio still work. On a 403, tubecast downloads again from the HLS stream.
+  Videos with auto-dubbed audio tracks list one stream per language; yt-dlp's default order
+  picks the original language first, also among the HLS streams.
 - **Feeds are one-way.** Played status and positions stay in the app; the server only sees which
   files are fetched. Deleting episodes once played would need a sync protocol such as gPodder,
   and an app that speaks it.
+
+## The "Listen later" feed
+
+One personal feed, filled by hand, next to the channel feeds: you watch a video on the iPad,
+share it to tubecast, and it shows up as an episode on the phone's podcast app, downloaded for
+offline listening. (Design agreed 2026-11-18.)
+
+- **Adding:** `POST /later` with the video URL as JSON (`{"url": "…"}`) or plain text. It answers
+  `202 Accepted` right away, with the video's ID; the download runs in the background, not in the
+  hourly check. Any URL yt-dlp handles works (YouTube, X, Instagram, …); SponsorBlock only applies to
+  YouTube. Sending a video that is still in the feed moves it to the top (and restarts its 14
+  days) without downloading it again. URLs not downloaded yet are kept in the state, so a restart
+  doesn't lose them.
+- **No login**, like the feeds: tubecast is meant to be reachable only by your own devices.
+- **Start time:** a `t=` in the URL (`t=754`, `t=12m34s`) puts "(from 12:34)" at the end of the
+  episode title. Podcast apps can't be told where to start, so you skip ahead once.
+- **Downloading:** right away, no `download_delay`: you share videos you've already been watching,
+  which usually have their SponsorBlock segments. Same audio, cuts and chapters as channel
+  episodes. One download at a time, in a queue; a failure is retried once after a minute.
+- **Feed:** `/feeds/later.xml`, title "Listen later", listed first on the index page. The
+  `pubDate` is when you added the video (so it's at the top of the app), the channel's name and
+  the video's upload date go in the notes. GUID: yt-dlp's `extractor:id` (`youtube:abc123`).
+  `later` is a reserved slug; a channel can't use it.
+- **State:** `state/later.json` (same layout as a channel's, plus `added` and `start` per episode),
+  audio in `audio/later/`. Backed up like the rest of `state/`.
+- **Retention:** episodes are deleted 14 days after they were added (`later.keep_days`), and the
+  oldest go first while the folder is over 5 GB (`later.max_size`). The feed can't know what was
+  played (see "Feeds are one-way"), so there's no deleting on download or play.
+- **Failure push:** when a download fails twice, tubecast posts "Failed: <title or URL> (<reason>)"
+  to `TUBECAST_NTFY_URL` (a full ntfy topic URL, in `.env`; unset = no push). Nothing is sent on
+  success: you refresh the show in the app.
+- **`/stats`:** adds `later_episodes`.
+- **Non-YouTube sites** have no audio-only stream (X, Instagram), so the format falls back to
+  `best` and yt-dlp takes the audio out of the video.
+- **Config:**
+
+  ```yaml
+  later:
+    keep_days: 14
+    max_size: 5GB
+  ```
+
+  Without a `later:` section the feed is off and `/later` answers 404.
+- **iOS Shortcut "Listen later"** (share sheet, accepts URLs and Safari pages): POST the URL to
+  `/later`, show "Added" or the error. Documented in the README.
 
 ## Next
 

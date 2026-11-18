@@ -9,6 +9,8 @@ services:
     environment:
       # DEBUG also logs each HTTP request; set TUBECAST_LOG_LEVEL in .env
       TUBECAST_LOG_LEVEL: ${TUBECAST_LOG_LEVEL:-INFO}
+      # ntfy topic URL for Listen later failures, e.g. https://ntfy.sh/<topic>; set it in .env
+      TUBECAST_NTFY_URL: ${TUBECAST_NTFY_URL:-}
     volumes:
       # config.yaml, the state of each channel and the audio files
       - data:/data

@@ -10,6 +10,12 @@ log = logging.getLogger(__name__)
 
 LIST_TIMEOUT = 300
 DOWNLOAD_TIMEOUT = 3 * 3600
+# YouTube's own AAC audio when there is one; anything else is converted to m4a. Sites without an
+# audio-only stream (X, Instagram) get their video, the audio taken out
+FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
+# When YouTube refuses the https streams with a 403 (seen on a video out for 15 hours, 2026-11-18),
+# its HLS streams still work. yt-dlp's own order still puts the original language before dubs
+HLS_FORMAT = "bestaudio[protocol^=m3u8]/best[protocol^=m3u8]"
 
 
 class YtDlpError(Exception):
@@ -64,26 +70,35 @@ class YtDlp:
         return json.loads(out)
 
     def video_info(self, video_id: str) -> dict:
-        out = self._run(["-J", "--no-playlist", watch_url(video_id)], LIST_TIMEOUT)
+        return self.url_info(watch_url(video_id))
+
+    def url_info(self, url: str) -> dict:
+        """The info of one video, on any site yt-dlp handles."""
+        out = self._run(["-J", "--no-playlist", url], LIST_TIMEOUT)
         return json.loads(out)
 
-    def download(self, video_id: str, dest_dir: Path,
-                 sponsorblock: tuple[str, ...]) -> tuple[Path, list[tuple[float, float]]]:
-        """Downloads the audio as m4a to dest_dir/<id>.m4a, sponsor segments cut out. Returns the
-        file and the segments cut, as (start, end) seconds of the original video."""
+    def download(self, url: str, dest_dir: Path, sponsorblock: tuple[str, ...],
+                 name: str = "%(id)s") -> tuple[Path, list[tuple[float, float]]]:
+        """Downloads the audio as m4a to dest_dir/<name>.m4a, sponsor segments cut out. Returns
+        the file and the segments cut, as (start, end) seconds of the original video. yt-dlp
+        cuts segments only on YouTube, the one site SponsorBlock covers."""
         dest_dir.mkdir(parents=True, exist_ok=True)
         args = [
             "--no-playlist",
-            # YouTube's own AAC audio when there is one; anything else is converted to m4a
-            "-f", "bestaudio[ext=m4a]/bestaudio",
             "-x", "--audio-format", "m4a",
             "--embed-metadata", "--embed-thumbnail", "--convert-thumbnails", "jpg",
-            "-o", str(dest_dir / "%(id)s.%(ext)s"),
+            "-o", str(dest_dir / f"{name}.%(ext)s"),
             "--print", "after_move:%(.{filepath,sponsorblock_chapters})j",
         ]
         if sponsorblock:
             args += ["--sponsorblock-remove", ",".join(sponsorblock)]
-        out = self._run(args + [watch_url(video_id)], DOWNLOAD_TIMEOUT)
+        try:
+            out = self._run(args + ["-f", FORMAT, url], DOWNLOAD_TIMEOUT)
+        except YtDlpError as e:
+            if "403" not in str(e):
+                raise
+            log.info("%s: HTTP 403, trying the HLS stream", url)
+            out = self._run(args + ["-f", HLS_FORMAT, url], DOWNLOAD_TIMEOUT)
         try:
             result = json.loads(out.strip().splitlines()[-1])
             path = Path(result["filepath"])

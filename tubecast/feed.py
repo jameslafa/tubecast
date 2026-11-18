@@ -1,11 +1,13 @@
 """Builds a channel's podcast feed: RSS 2.0 with the iTunes tags podcast apps read."""
 
 import html
+import re
 from email.utils import format_datetime
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 
 from .config import Channel
+from .later import format_start
 from .ytdlp import watch_url
 
 ITUNES = "http://www.itunes.com/dtds/podcast-1.0.dtd"
@@ -39,7 +41,25 @@ def _html(description: str, link: str) -> str:
     """The description as simple HTML: paragraphs and line breaks kept, then the video link."""
     paragraphs = [p for p in description.split("\n\n") if p.strip()]
     body = "".join(f"<p>{html.escape(p).replace(chr(10), '<br>')}</p>" for p in paragraphs)
-    return body + f'<p><a href="{html.escape(link)}">Watch on YouTube</a></p>'
+    site = "YouTube" if re.match(r"https?://([\w-]+\.)?(youtube\.com|youtu\.be)/", link) else "the website"
+    return body + f'<p><a href="{html.escape(link)}">Watch on {site}</a></p>'
+
+
+def _title(episode: dict) -> str:
+    """The title, with where to start for a Listen later episode sent with a t= time."""
+    if episode.get("start"):
+        return f"{episode['title']} (from {format_start(episode['start'])})"
+    return episode["title"]
+
+
+def _description(episode: dict) -> str:
+    """The description, after who made the video and when for a Listen later episode."""
+    about = []
+    if episode.get("uploader"):
+        about.append(f"By {episode['uploader']}")
+    if episode.get("uploaded"):
+        about.append(datetime.fromtimestamp(episode["uploaded"], timezone.utc).strftime("%-d %b %Y"))
+    return "\n\n".join(p for p in (", ".join(about), episode["description"]) if p)
 
 
 def build(channel: Channel, state: dict, base_url: str) -> bytes:
@@ -69,12 +89,13 @@ def build(channel: Channel, state: dict, base_url: str) -> bytes:
     episodes = state.get("episodes") or {}
     for vid in sorted(episodes, key=lambda v: episodes[v]["timestamp"], reverse=True):
         episode = episodes[vid]
-        video_link = watch_url(vid)
+        video_link = episode.get("link") or watch_url(vid)
+        description = _description(episode)
         item = _sub(ch, "item")
-        _sub(item, "title", episode["title"])
+        _sub(item, "title", _title(episode))
         _sub(item, "link", video_link)
-        _sub(item, "description", f"{episode['description']}\n\n{video_link}".strip())
-        _sub(item, f"{{{CONTENT}}}encoded", _html(episode["description"], video_link))
+        _sub(item, "description", f"{description}\n\n{video_link}".strip())
+        _sub(item, f"{{{CONTENT}}}encoded", _html(description, video_link))
         # The video ID, so apps keep the same episode if the file is downloaded again
         _sub(item, "guid", vid, isPermaLink="false")
         published = datetime.fromtimestamp(episode["timestamp"], timezone.utc)

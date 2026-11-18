@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from .config import ConfigError, load
+from .later import Later
 from .server import App, make_server
 from .sync import sync_all
 from .ytdlp import YtDlp
@@ -44,6 +45,9 @@ def main() -> None:
     log.info("serving on %s:%d, data in %s", host, port, data_dir)
 
     ytdlp = YtDlp(data_dir)
+    # Videos sent to POST /later, downloaded in their own thread; failures go to ntfy if set
+    app.later = Later(data_dir, ytdlp, lambda: app.config, os.environ.get("TUBECAST_NTFY_URL") or None)
+    threading.Thread(target=app.later.run, daemon=True).start()
     last_update = 0.0
     while True:
         if update_ytdlp and time.time() - last_update >= UPDATE_EVERY:
@@ -67,6 +71,7 @@ def main() -> None:
             app.config_error = str(e)  # keep serving the last good config, if any
         if app.config and not app.config_error:
             sync_all(app.config, ytdlp, data_dir)
+            app.later.prune(app.config)
             app.last_check = time.time()
             wait = app.config.check_every
         else:

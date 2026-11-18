@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .config import Channel, Config
 from .chapters import merge, shift_timestamps
-from .ytdlp import YtDlp, YtDlpError, audio_duration, file_chapters
+from .ytdlp import YtDlp, YtDlpError, audio_duration, file_chapters, watch_url
 
 log = logging.getLogger(__name__)
 
@@ -177,6 +177,19 @@ def remove_orphans(folder: Path, episodes: dict) -> None:
             path.unlink()
 
 
+def episode(meta: dict, path: Path, segments: list[tuple[float, float]]) -> dict:
+    """An episode from a video's metadata and its downloaded audio."""
+    return {
+        **{k: meta[k] for k in ("title", "timestamp", "thumbnail")},
+        # The chapter list in the description, moved to match the cut audio
+        "description": shift_timestamps(meta["description"], merge(segments)),
+        "duration": audio_duration(path) or meta.get("duration"),
+        "chapters": file_chapters(path),
+        "file": path.name,
+        "size": path.stat().st_size,
+    }
+
+
 def sync_channel(config: Config, channel: Channel, ytdlp: YtDlp, data_dir: Path) -> None:
     now = time.time()
     state = load_state(data_dir, channel.slug)
@@ -192,21 +205,13 @@ def sync_channel(config: Config, channel: Channel, ytdlp: YtDlp, data_dir: Path)
         meta = state["videos"][vid]
         log.info("%s: downloading %s %r", channel.slug, vid, meta["title"])
         try:
-            path, segments = ytdlp.download(vid, folder, config.sponsorblock)
+            path, segments = ytdlp.download(watch_url(vid), folder, config.sponsorblock)
         except YtDlpError as e:
             log.warning("%s: could not download %s: %s", channel.slug, vid, e)
             state["videos"][vid] = {"error": f"download: {e}", "checked": now}
             save_state(data_dir, channel.slug, state)
             continue
-        episodes[vid] = {
-            **{k: meta[k] for k in ("title", "timestamp", "thumbnail")},
-            # The chapter list in the description, moved to match the cut audio
-            "description": shift_timestamps(meta["description"], merge(segments)),
-            "duration": audio_duration(path) or meta.get("duration"),
-            "chapters": file_chapters(path),
-            "file": path.name,
-            "size": path.stat().st_size,
-        }
+        episodes[vid] = episode(meta, path, segments)
         added += 1
         save_state(data_dir, channel.slug, state)
 

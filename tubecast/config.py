@@ -14,6 +14,8 @@ GLOBAL_DEFAULTS = {
     "download_delay": "6h",
     "sponsorblock": ["sponsor", "selfpromo", "interaction"],
 }
+LATER_DEFAULTS = {"keep_days": 14, "max_size": "5GB"}
+LATER_SLUG = "later"  # the "Listen later" feed's slug, which no channel may use
 # Tabs yt-dlp accepts at the end of a channel URL; we strip them to get the channel itself
 CHANNEL_TABS = {"featured", "videos", "shorts", "streams", "live", "playlists", "community",
                 "releases", "podcasts", "about"}
@@ -34,12 +36,20 @@ class Channel:
 
 
 @dataclass(frozen=True)
+class Later:
+    """The "Listen later" feed: videos sent one by one to POST /later."""
+    keep_days: int  # days an episode stays after it was sent
+    max_size: int  # bytes the feed's audio may take; the oldest episodes go first beyond it
+
+
+@dataclass(frozen=True)
 class Config:
     base_url: str  # where podcast apps reach tubecast, used in feed and audio URLs
     check_every: int  # seconds between two checks of all channels
     download_delay: int  # seconds a video must be online before we download it
     sponsorblock: tuple[str, ...]
     channels: tuple[Channel, ...]
+    later: Later | None = None  # None: the "Listen later" feed is off
 
 
 def parse_duration(value, key: str) -> int:
@@ -58,6 +68,30 @@ def parse_duration(value, key: str) -> int:
         raise ConfigError(f"{key}: expected a duration like 6h or 30m, got {value!r}")
     hours, minutes, seconds = (int(part or 0) for part in match.groups())
     return hours * 3600 + minutes * 60 + seconds
+
+
+def parse_size(value, key: str) -> int:
+    """Bytes from a number of bytes or a string like "500MB" or "5GB" (powers of 1000)."""
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([kmgt]?)b?", str(value).strip().lower())
+    if isinstance(value, bool) or not match:
+        raise ConfigError(f"{key}: expected a size like 500MB or 5GB, got {value!r}")
+    number, unit = match.groups()
+    return int(float(number) * 1000 ** " kmgt".index(unit or " "))
+
+
+def _later(value) -> Later | None:
+    if value is None or value is False:
+        return None
+    if value is True:
+        value = {}
+    if not isinstance(value, dict):
+        raise ConfigError("later: expected true or a mapping with keep_days and max_size")
+    unknown = set(value) - set(LATER_DEFAULTS)
+    if unknown:
+        raise ConfigError(f"later: unknown option(s): {', '.join(sorted(unknown))}")
+    options = {**LATER_DEFAULTS, **value}
+    return Later(keep_days=_keep(options["keep_days"], "later.keep_days"),
+                 max_size=parse_size(options["max_size"], "later.max_size"))
 
 
 def normalize_channel_url(value: str) -> str:
@@ -127,7 +161,7 @@ def _channel(entry, defaults: dict, index: int) -> Channel:
 def parse(data) -> Config:
     if not isinstance(data, dict):
         raise ConfigError("the config must be a mapping of settings")
-    unknown = set(data) - {"base_url", "channels", *GLOBAL_DEFAULTS, *CHANNEL_DEFAULTS}
+    unknown = set(data) - {"base_url", "channels", "later", *GLOBAL_DEFAULTS, *CHANNEL_DEFAULTS}
     if unknown:
         raise ConfigError(f"unknown setting(s): {', '.join(sorted(unknown))}")
     base_url = str(data.get("base_url") or "").rstrip("/")
@@ -148,6 +182,8 @@ def parse(data) -> Config:
     duplicates = sorted({s for s in slugs if slugs.count(s) > 1})
     if duplicates:
         raise ConfigError(f"two channels share the slug {duplicates[0]!r}; set slug on one of them")
+    if LATER_SLUG in slugs:
+        raise ConfigError(f"the slug {LATER_SLUG!r} is the Listen later feed's; set another slug")
 
     check_every = parse_duration(options["check_every"], "check_every")
     if check_every < 60:
@@ -158,6 +194,7 @@ def parse(data) -> Config:
         download_delay=parse_duration(options["download_delay"], "download_delay"),
         sponsorblock=tuple(sponsorblock),
         channels=tuple(channels),
+        later=_later(data.get("later")),
     )
 
 

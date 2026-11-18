@@ -91,7 +91,8 @@ class FakeYtDlp:
         self.info_calls.append(vid)
         return {"id": vid, **self.videos[vid]}
 
-    def download(self, vid, dest_dir: Path, sponsorblock):
+    def download(self, url, dest_dir: Path, sponsorblock):
+        vid = url.rsplit("=", 1)[-1]
         self.downloads.append(vid)
         dest_dir.mkdir(parents=True, exist_ok=True)
         path = dest_dir / f"{vid}.m4a"
